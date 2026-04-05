@@ -106,7 +106,7 @@ def main():
             mode=effective_mode,
         )
 
-        return result.output
+        return result.format_full()
 
     # Create Matrix bridge
     crypto_store = str(Path(__file__).parent / "crypto_store")
