@@ -163,6 +163,12 @@ class CommandHandler:
         updated = str(info.get("updated_at", ""))[:10]
         summaries = info.get("summary_count", 0)
 
+        # Update room name from session summary
+        room_name = summary
+        if branch and branch != "N/A":
+            room_name = f"{summary} | {branch}"
+        self._pending_rename = (room_id, room_name)
+
         return CommandResult(
             f"📋 **Session: {summary}**\n"
             f"  • ID: `{state.session_id[:8]}...`\n"
