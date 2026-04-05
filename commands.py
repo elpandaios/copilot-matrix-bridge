@@ -5,6 +5,7 @@ from typing import Optional
 
 from room_store import RoomStore
 from project_discovery import ProjectDiscovery
+from copilot_runner import CopilotRunner
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,12 @@ class CommandHandler:
         self,
         room_store: RoomStore,
         project_discovery: ProjectDiscovery,
+        copilot_runner: CopilotRunner,
         device_name: str,
     ):
         self.room_store = room_store
         self.project_discovery = project_discovery
+        self.copilot_runner = copilot_runner
         self.device_name = device_name
 
     def handle(self, room_id: str, message: str) -> CommandResult:
@@ -45,6 +48,7 @@ class CommandHandler:
             "/mode": self._cmd_mode,
             "/status": self._cmd_status,
             "/reset": self._cmd_reset,
+            "/shutdown": self._cmd_shutdown,
             "/help": self._cmd_help,
         }
 
@@ -114,19 +118,32 @@ class CommandHandler:
         state = self.room_store.get(room_id)
         project = state.project_path or "Not set (use `/project <name>`)"
         session = f"`{state.session_id[:8]}...`" if state.session_id else "None"
+        active = self.copilot_runner.active_count
 
         return CommandResult(
             f"🤖 **Status**\n"
             f"  • Device: {self.device_name}\n"
             f"  • Project: {project}\n"
             f"  • Mode: {state.mode}\n"
-            f"  • Session: {session}"
+            f"  • Session: {session}\n"
+            f"  • Active copilot processes: {active}"
         )
 
     def _cmd_reset(self, room_id: str, arg: str) -> CommandResult:
         self.room_store.reset_session(room_id)
         return CommandResult(
             "🔄 Session reset. Next message will start a fresh copilot session."
+        )
+
+    def _cmd_shutdown(self, room_id: str, arg: str) -> CommandResult:
+        active = self.copilot_runner.active_count
+        if active == 0:
+            return CommandResult("No copilot processes running.")
+        # kill_all is async, but we return a message now — the actual kill
+        # is best done from the async context. We'll mark it as needing async.
+        self._pending_shutdown = True
+        return CommandResult(
+            f"🛑 Killing {active} active copilot process(es)..."
         )
 
     def _cmd_help(self, room_id: str, arg: str) -> CommandResult:
@@ -138,6 +155,7 @@ class CommandHandler:
             "  `/mode <chat|plan|auto>` — set room mode\n"
             "  `/status` — show current state\n"
             "  `/reset` — start fresh copilot session\n"
+            "  `/shutdown` — kill stuck copilot processes\n"
             "  `/help` — this message\n\n"
             "**Prefixes** (override mode for one message):\n"
             "  `plan: <msg>` — force plan mode\n"

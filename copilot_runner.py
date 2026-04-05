@@ -32,6 +32,7 @@ class CopilotRunner:
     def __init__(self, copilot_command: str = "copilot", timeout: int = 300):
         self.copilot_command = copilot_command
         self.timeout = timeout
+        self._active_processes: dict[str, asyncio.subprocess.Process] = {}
 
     async def run(
         self,
@@ -58,6 +59,7 @@ class CopilotRunner:
                 stderr=asyncio.subprocess.PIPE,
                 cwd=cwd,
             )
+            self._active_processes[session_id] = process
 
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -66,6 +68,7 @@ class CopilotRunner:
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
+                self._active_processes.pop(session_id, None)
                 return CopilotResult(
                     output="⏱️ Copilot timed out after {}s. The session is preserved — send another message to continue.".format(
                         self.timeout
@@ -73,6 +76,8 @@ class CopilotRunner:
                     exit_code=-1,
                     timed_out=True,
                 )
+
+            self._active_processes.pop(session_id, None)
 
             raw = stdout.decode("utf-8", errors="replace").strip()
             if not raw and stderr:
@@ -92,6 +97,29 @@ class CopilotRunner:
         except Exception as e:
             logger.exception("Copilot execution failed")
             return CopilotResult(output=f"❌ Error: {e}", exit_code=-1)
+
+    async def kill_all(self):
+        """Kill all running copilot processes."""
+        count = len(self._active_processes)
+        if count == 0:
+            return 0
+        logger.info("Killing %d active copilot process(es)...", count)
+        for sid, proc in list(self._active_processes.items()):
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+        self._active_processes.clear()
+        return count
+
+    @property
+    def active_count(self) -> int:
+        # Clean up already-finished processes
+        finished = [s for s, p in self._active_processes.items() if p.returncode is not None]
+        for s in finished:
+            self._active_processes.pop(s, None)
+        return len(self._active_processes)
 
     def _parse_json_output(self, raw: str) -> CopilotResult:
         """Parse JSONL output from copilot into structured result."""

@@ -12,5 +12,5 @@ projects_root: "C:\\Users\\hugom\\PycharmProjects"
 # Mac/Linux: usually just "copilot"
 copilot_command: "copilot"
 
-# Timeout in seconds for copilot CLI invocations
-copilot_timeout: 300
+# Timeout in seconds for copilot CLI invocations (default: 3 hours)
+copilot_timeout: 10800

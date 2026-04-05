@@ -73,6 +73,7 @@ def main():
     command_handler = CommandHandler(
         room_store=room_store,
         project_discovery=project_discovery,
+        copilot_runner=copilot_runner,
         device_name=device_name,
     )
 
@@ -81,6 +82,11 @@ def main():
         # Check for slash commands first
         cmd_result = command_handler.handle(room_id, message)
         if cmd_result.handled:
+            # Handle async shutdown if requested
+            if getattr(command_handler, '_pending_shutdown', False):
+                command_handler._pending_shutdown = False
+                killed = await copilot_runner.kill_all()
+                return f"🛑 Killed {killed} copilot process(es)."
             return cmd_result.response
 
         # Check for inline prefix override
@@ -132,10 +138,17 @@ def main():
 
     loop = asyncio.new_event_loop()
 
+    async def graceful_shutdown():
+        """Kill copilot processes and disconnect from Matrix."""
+        killed = await copilot_runner.kill_all()
+        if killed:
+            logger.info("Killed %d copilot process(es)", killed)
+        await bridge.stop()
+
     # Graceful shutdown
     def shutdown_handler():
         logger.info("Shutdown signal received...")
-        loop.create_task(bridge.stop())
+        loop.create_task(graceful_shutdown())
 
     if sys.platform != "win32":
         loop.add_signal_handler(signal.SIGTERM, shutdown_handler)
@@ -145,7 +158,7 @@ def main():
         loop.run_until_complete(bridge.start())
     except KeyboardInterrupt:
         logger.info("Interrupted. Shutting down...")
-        loop.run_until_complete(bridge.stop())
+        loop.run_until_complete(graceful_shutdown())
     finally:
         loop.close()
 
