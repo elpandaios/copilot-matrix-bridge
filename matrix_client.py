@@ -8,6 +8,7 @@ from nio import (
     AsyncClient,
     InviteMemberEvent,
     MatrixRoom,
+    MegolmEvent,
     RoomMessageText,
     LoginResponse,
     LoginError,
@@ -53,6 +54,7 @@ class MatrixBridge:
         # Register event callbacks
         self.client.add_event_callback(self._on_room_message, RoomMessageText)
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
+        self.client.add_event_callback(self._on_encrypted_message, MegolmEvent)
 
         # Initial sync to catch up — we ignore messages from before we started
         logger.info("Performing initial sync...")
@@ -140,6 +142,30 @@ class MatrixBridge:
                 logger.exception("Error handling message")
                 await self.send_typing(room.room_id, False)
                 await self.send_message(room.room_id, f"❌ Bridge error: {e}")
+
+    async def _on_encrypted_message(self, room: MatrixRoom, event: MegolmEvent):
+        """Handle encrypted messages we can't decrypt."""
+        if not self._initial_sync_done:
+            return
+        if event.sender == self.client.user_id:
+            return
+
+        # Only warn once per room
+        room_id = room.room_id
+        if not hasattr(self, "_encryption_warned"):
+            self._encryption_warned = set()
+
+        if room_id not in self._encryption_warned:
+            self._encryption_warned.add(room_id)
+            logger.warning("Encrypted message in %s — cannot decrypt", room.display_name)
+            await self.send_message(
+                room_id,
+                "🔒 **I can't read encrypted messages.**\n\n"
+                "Please create rooms with encryption **disabled**:\n"
+                "  1. Create room → Show advanced → **turn off** \"Enable encryption\"\n"
+                "  2. Or in Room Settings → Security → Encryption must be off\n\n"
+                "This is required because the bridge runs without E2E key management.",
+            )
 
     @staticmethod
     def _chunk_message(text: str, max_len: int = 16000) -> list[str]:
