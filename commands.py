@@ -159,8 +159,8 @@ class CommandHandler:
         summary = info.get("summary", "Untitled")
         branch = info.get("branch", "N/A")
         repo = info.get("repository", "")
-        created = info.get("created_at", "")[:10]
-        updated = info.get("updated_at", "")[:10]
+        created = str(info.get("created_at", ""))[:10]
+        updated = str(info.get("updated_at", ""))[:10]
         summaries = info.get("summary_count", 0)
 
         return CommandResult(
@@ -199,7 +199,7 @@ class CommandHandler:
             branch = s.get("branch", "")
             cwd = s.get("cwd", "")
             project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "?"
-            updated = s.get("updated_at", "")[:10]
+            updated = str(s.get("updated_at", ""))[:10]
             current = " ← current" if state.session_id and s.get("id", "").startswith(state.session_id[:8]) else ""
             branch_str = f" | {branch}" if branch else ""
             lines.append(f"  **{i}.** `{sid}` {project}{branch_str} — _{summary}_ ({updated}){current}")
