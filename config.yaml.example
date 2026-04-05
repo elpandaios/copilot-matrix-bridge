@@ -1,0 +1,14 @@
+# Device-specific configuration
+device_name: "Windows Desktop"
+
+# Root directory to scan for projects (directories with .git)
+projects_root: "C:\\Users\\hugom\\PycharmProjects"
+
+# Copilot CLI executable
+# Windows: use full path to .cmd if copilot is not on Python's PATH
+# e.g. "C:\\nvm4w\\nodejs\\copilot.cmd" or just "copilot" if on PATH
+# Mac/Linux: usually just "copilot"
+copilot_command: "copilot"
+
+# Timeout in seconds for copilot CLI invocations
+copilot_timeout: 300
