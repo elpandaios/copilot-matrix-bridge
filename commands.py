@@ -41,7 +41,7 @@ class CommandHandler:
         """Process a message. Returns CommandResult with handled=False if not a command."""
         stripped = message.strip()
 
-        if not stripped.startswith("/"):
+        if not stripped.startswith(":"):
             return CommandResult("", handled=False)
 
         parts = stripped.split(maxsplit=1)
@@ -49,16 +49,16 @@ class CommandHandler:
         arg = parts[1].strip() if len(parts) > 1 else ""
 
         handlers = {
-            "/project": self._cmd_project,
-            "/projects": self._cmd_projects,
-            "/mode": self._cmd_mode,
-            "/status": self._cmd_status,
-            "/session": self._cmd_session,
-            "/resume": self._cmd_resume,
-            "/reset": self._cmd_reset,
-            "/clear": self._cmd_clear,
-            "/shutdown": self._cmd_shutdown,
-            "/help": self._cmd_help,
+            ":project": self._cmd_project,
+            ":projects": self._cmd_projects,
+            ":mode": self._cmd_mode,
+            ":status": self._cmd_status,
+            ":session": self._cmd_session,
+            ":resume": self._cmd_resume,
+            ":reset": self._cmd_reset,
+            ":clear": self._cmd_clear,
+            ":shutdown": self._cmd_shutdown,
+            ":help": self._cmd_help,
         }
 
         handler = handlers.get(command)
@@ -70,7 +70,7 @@ class CommandHandler:
     def _cmd_project(self, room_id: str, arg: str) -> CommandResult:
         if not arg:
             return CommandResult(
-                "Usage: `/project <name>`\nUse `/projects` to see available projects."
+                "Usage: `:project <name>`\nUse `:projects` to see available projects."
             )
 
         path = self.project_discovery.resolve(arg)
@@ -113,7 +113,7 @@ class CommandHandler:
             state = self.room_store.get(room_id)
             return CommandResult(
                 f"Current mode: **{state.mode}**\n\n"
-                "Usage: `/mode <chat|plan|auto>`\n"
+                "Usage: `:mode <chat|plan|auto>`\n"
                 "  • `chat` — conversational, answers and stops\n"
                 "  • `plan` — structured planning, no execution\n"
                 "  • `auto` — full send, keeps working until done\n\n"
@@ -131,7 +131,7 @@ class CommandHandler:
 
     def _cmd_status(self, room_id: str, arg: str) -> CommandResult:
         state = self.room_store.get(room_id)
-        project = state.project_path or "Not set (use `/project <name>`)"
+        project = state.project_path or "Not set (use `:project <name>`)"
         session = f"`{state.session_id[:8]}...`" if state.session_id else "None"
         active = self.copilot_runner.active_count
 
@@ -214,7 +214,7 @@ class CommandHandler:
         return CommandResult(
             f"📜 **Recent sessions** ({len(sessions)} total):\n\n"
             + "\n".join(lines)
-            + "\n\n_Use `/resume <number>` to switch to a session._"
+            + "\n\n_Use `:resume <number>` to switch to a session._"
         )
 
     def _handle_resume_selection(self, room_id: str, selection: str, sessions: list[dict]) -> Optional[CommandResult]:
@@ -272,16 +272,16 @@ class CommandHandler:
         return CommandResult(
             "🤖 **Copilot Matrix Bridge**\n\n"
             "**Commands:**\n"
-            "  `/project <name>` — set working directory\n"
-            "  `/projects` — list available projects\n"
-            "  `/mode <chat|plan|auto>` — set room mode\n"
-            "  `/session` — show copilot session details\n"
-            "  `/resume` — list & switch to past sessions\n"
-            "  `/status` — show current state\n"
-            "  `/reset` — start fresh copilot session (new ID)\n"
-            "  `/clear` — clear copilot context (same session)\n"
-            "  `/shutdown` — kill stuck copilot processes\n"
-            "  `/help` — this message\n\n"
+            "  `:project <name>` — set working directory\n"
+            "  `:projects` — list available projects\n"
+            "  `:mode <chat|plan|auto>` — set room mode\n"
+            "  `:session` — show copilot session details\n"
+            "  `:resume` — list & switch to past sessions\n"
+            "  `:status` — show current state\n"
+            "  `:reset` — start fresh copilot session (new ID)\n"
+            "  `:clear` — clear copilot context (same session)\n"
+            "  `:shutdown` — kill stuck copilot processes\n"
+            "  `:help` — this message\n\n"
             "**Prefixes** (override mode for one message):\n"
             "  `plan: <msg>` — force plan mode\n"
             "  `do: <msg>` — force autopilot mode\n\n"

@@ -130,7 +130,7 @@ def main():
         if not state.project_path:
             return (
                 "⚠️ No project set for this room.\n"
-                "Use `/project <name>` to set one, or `/projects` to see what's available."
+                "Use `:project <name>` to set one, or `:projects` to see what's available."
             )
 
         effective_mode = mode_override or state.mode

@@ -254,9 +254,9 @@ class MatrixBridge:
             await self.send_message(
                 room.room_id,
                 f"🤖 **Connected to {self.device_name}**\n\n"
-                "Use `/projects` to see available projects, "
-                "or `/project <name>` to set one.\n"
-                "Type `/help` for all commands.",
+                "Use `:projects` to see available projects, "
+                "or `:project <name>` to set one.\n"
+                "Type `:help` for all commands.",
             )
         else:
             logger.warning("Ignoring invite from non-owner: %s", event.sender)
