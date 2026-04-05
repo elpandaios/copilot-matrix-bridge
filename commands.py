@@ -12,6 +12,12 @@ logger = logging.getLogger(__name__)
 VALID_MODES = {"chat", "plan", "auto"}
 
 
+def build_room_name(summary: str = "", project: str = "", branch: str = "", created: str = "") -> str:
+    """Build room name: summary | project | branch | date."""
+    parts = [p for p in [summary, project, branch, created] if p and p != "N/A"]
+    return " | ".join(parts) if parts else "Copilot"
+
+
 class CommandResult:
     def __init__(self, response: str, handled: bool = True):
         self.response = response
@@ -77,12 +83,8 @@ class CommandHandler:
 
         state = self.room_store.set_project(room_id, path)
 
-        # Build room name: project | branch
         branch = self.copilot_runner.get_git_branch(path)
-        room_name = arg
-        if branch:
-            room_name = f"{arg} | {branch}"
-        self._pending_rename = (room_id, room_name)
+        self._pending_rename = (room_id, build_room_name(project=arg, branch=branch or ""))
 
         return CommandResult(
             f"✅ Working in **{arg}**\n`{path}`\n"
@@ -163,11 +165,10 @@ class CommandHandler:
         updated = str(info.get("updated_at", ""))[:10]
         summaries = info.get("summary_count", 0)
 
-        # Update room name from session summary
-        room_name = summary
-        if branch and branch != "N/A":
-            room_name = f"{summary} | {branch}"
-        self._pending_rename = (room_id, room_name)
+        # Update room name from session info
+        cwd = info.get("cwd", "")
+        project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else ""
+        self._pending_rename = (room_id, build_room_name(summary, project, branch, created))
 
         return CommandResult(
             f"📋 **Session: {summary}**\n"
@@ -228,10 +229,9 @@ class CommandHandler:
                 branch = s.get("branch", "")
                 if sid:
                     self.room_store.set_session(room_id, sid, cwd)
-                    room_name = summary
-                    if branch:
-                        room_name = f"{summary} | {branch}"
-                    self._pending_rename = (room_id, room_name)
+                    project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else ""
+                    created = str(s.get("created_at", ""))[:10]
+                    self._pending_rename = (room_id, build_room_name(summary, project, branch, created))
                     return CommandResult(
                         f"✅ Resumed session: **{summary}**\n"
                         f"  • ID: `{sid[:8]}...`\n"

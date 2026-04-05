@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-from commands import CommandHandler, parse_prefix
+from commands import CommandHandler, parse_prefix, build_room_name
 from copilot_runner import CopilotRunner
 from matrix_client import MatrixBridge
 from project_discovery import ProjectDiscovery
@@ -91,8 +91,10 @@ def main():
         summary = info.get("summary", "")
         if summary:
             branch = info.get("branch", "")
-            name = f"{summary} | {branch}" if branch else summary
-            await bridge.set_room_name(room_id, name)
+            cwd = info.get("cwd", "")
+            project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else ""
+            created = str(info.get("created_at", ""))[:10]
+            await bridge.set_room_name(room_id, build_room_name(summary, project, branch, created))
 
     async def on_message(room_id: str, message: str) -> str:
         """Route a message to commands or copilot."""
