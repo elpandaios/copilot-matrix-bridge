@@ -86,6 +86,18 @@ def main():
                 command_handler._pending_shutdown = False
                 killed = await copilot_runner.kill_all()
                 return f"🛑 Killed {killed} copilot process(es)."
+            pending_clear = getattr(command_handler, '_pending_clear', None)
+            if pending_clear:
+                command_handler._pending_clear = None
+                _, session_id, project_path = pending_clear
+                result = await copilot_runner.run(
+                    message="/clear",
+                    session_id=session_id,
+                    room_id=room_id,
+                    cwd=project_path,
+                    mode="chat",
+                )
+                return f"🧹 Session cleared. {result.output}"
             return cmd_result.response
 
         # Check for inline prefix override

@@ -48,6 +48,7 @@ class CommandHandler:
             "/mode": self._cmd_mode,
             "/status": self._cmd_status,
             "/reset": self._cmd_reset,
+            "/clear": self._cmd_clear,
             "/shutdown": self._cmd_shutdown,
             "/help": self._cmd_help,
         }
@@ -135,6 +136,15 @@ class CommandHandler:
             "🔄 Session reset. Next message will start a fresh copilot session."
         )
 
+    def _cmd_clear(self, room_id: str, arg: str) -> CommandResult:
+        state = self.room_store.get(room_id)
+        if not state.session_id:
+            return CommandResult("No active session to clear.")
+        self._pending_clear = (room_id, state.session_id, state.project_path)
+        return CommandResult(
+            f"🧹 Clearing copilot session `{state.session_id[:8]}...`"
+        )
+
     def _cmd_shutdown(self, room_id: str, arg: str) -> CommandResult:
         active = self.copilot_runner.active_count
         if active == 0:
@@ -154,7 +164,8 @@ class CommandHandler:
             "  `/projects` — list available projects\n"
             "  `/mode <chat|plan|auto>` — set room mode\n"
             "  `/status` — show current state\n"
-            "  `/reset` — start fresh copilot session\n"
+            "  `/reset` — start fresh copilot session (new ID)\n"
+            "  `/clear` — clear copilot context (same session)\n"
             "  `/shutdown` — kill stuck copilot processes\n"
             "  `/help` — this message\n\n"
             "**Prefixes** (override mode for one message):\n"
