@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from typing import Callable, Awaitable, Optional
 
+import markdown
+
 from nio import (
     AsyncClient,
     InviteMemberEvent,
@@ -326,5 +328,8 @@ class MatrixBridge:
 
     @staticmethod
     def _md_to_html(text: str) -> str:
-        """Basic markdown pass-through. Matrix clients handle rendering."""
-        return text.replace("\n", "<br>")
+        """Convert markdown to HTML for Matrix formatted_body."""
+        return markdown.markdown(
+            text,
+            extensions=["tables", "fenced_code", "nl2br"],
+        )
