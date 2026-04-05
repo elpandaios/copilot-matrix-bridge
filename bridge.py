@@ -82,7 +82,6 @@ def main():
         # Check for slash commands first
         cmd_result = command_handler.handle(room_id, message)
         if cmd_result.handled:
-            # Handle async shutdown if requested
             if getattr(command_handler, '_pending_shutdown', False):
                 command_handler._pending_shutdown = False
                 killed = await copilot_runner.kill_all()
@@ -101,18 +100,44 @@ def main():
                 "Use `/project <name>` to set one, or `/projects` to see what's available."
             )
 
-        # Determine effective mode
         effective_mode = mode_override or state.mode
 
-        # Run copilot
+        # Streaming callback: send each step to Matrix as it happens
+        async def on_step(rid: str, step_text: str):
+            await bridge.send_message(rid, step_text)
+
+        # ask_user callback: forward question to Matrix, wait for reply
+        async def on_ask_user(rid: str, question: str, choices: list[str]) -> str:
+            # Format question with numbered choices
+            if choices:
+                formatted = question + "\n\n"
+                for i, choice in enumerate(choices, 1):
+                    formatted += f"**{i}.** {choice}\n"
+                formatted += "\n_Reply with the number or your answer:_"
+            else:
+                formatted = question + "\n\n_Reply with your answer:_"
+            await bridge.send_message(rid, f"❓ {formatted}")
+            # Wait for the user's next message in this room
+            answer = await bridge.wait_for_reply(rid)
+            # If they replied with a number, map to the choice
+            if choices and answer.strip().isdigit():
+                idx = int(answer.strip()) - 1
+                if 0 <= idx < len(choices):
+                    return choices[idx]
+            return answer
+
+        # Run copilot with streaming
         result = await copilot_runner.run(
             message=clean_message,
             session_id=state.session_id,
+            room_id=room_id,
             cwd=state.project_path,
             mode=effective_mode,
+            on_step=on_step,
+            on_ask_user=on_ask_user,
         )
 
-        return result.format_full()
+        return result.output
 
     # Create Matrix bridge
     crypto_store = str(Path(__file__).parent / "crypto_store")

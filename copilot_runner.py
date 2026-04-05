@@ -1,35 +1,27 @@
-"""Spawn copilot CLI one-shot per message with --resume for session persistence."""
+"""Spawn copilot CLI with streaming JSONL output and interactive ask_user support."""
 
 import asyncio
 import json
 import logging
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
+from typing import Optional, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
+
+# Callback types for streaming events to Matrix
+OnStepCallback = Callable[[str, str], Awaitable[None]]  # (room_id, step_text)
+OnAskUserCallback = Callable[[str, str, list[str]], Awaitable[str]]  # (room_id, question, choices) -> answer
 
 
 @dataclass
 class CopilotResult:
     output: str
-    steps: list[str] = field(default_factory=list)
     exit_code: int = 0
     timed_out: bool = False
 
-    def format_full(self) -> str:
-        """Format output with thinking steps for Matrix."""
-        parts = []
-        if self.steps:
-            for step in self.steps:
-                parts.append(step)
-            parts.append("")  # blank line before response
-        if self.output:
-            parts.append(self.output)
-        return "\n".join(parts) if parts else "✅ Done (no output)."
-
 
 class CopilotRunner:
-    def __init__(self, copilot_command: str = "copilot", timeout: int = 300):
+    def __init__(self, copilot_command: str = "copilot", timeout: int = 10800):
         self.copilot_command = copilot_command
         self.timeout = timeout
         self._active_processes: dict[str, asyncio.subprocess.Process] = {}
@@ -38,68 +30,118 @@ class CopilotRunner:
         self,
         message: str,
         session_id: str,
+        room_id: str,
         cwd: Optional[str] = None,
         mode: str = "chat",
+        on_step: Optional[OnStepCallback] = None,
+        on_ask_user: Optional[OnAskUserCallback] = None,
     ) -> CopilotResult:
-        """Run copilot with the given message and return the response."""
-
+        """Run copilot interactively, streaming events to Matrix."""
         prompt, extra_flags = self._build_prompt_and_flags(message, mode)
         args = self._build_args(prompt, session_id, extra_flags)
-
-        logger.info(
-            "Running copilot session=%s mode=%s cwd=%s", session_id, mode, cwd
-        )
-        logger.debug("Args: %s", args)
+        logger.info("Running copilot session=%s mode=%s cwd=%s", session_id, mode, cwd)
 
         try:
             process = await asyncio.create_subprocess_exec(
-                self.copilot_command,
-                *args,
+                self.copilot_command, *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.PIPE,
                 cwd=cwd,
             )
             self._active_processes[session_id] = process
 
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    process.communicate(), timeout=self.timeout
+                final_message = await asyncio.wait_for(
+                    self._stream_events(process, room_id, on_step, on_ask_user),
+                    timeout=self.timeout,
                 )
             except asyncio.TimeoutError:
                 process.kill()
                 await process.wait()
                 self._active_processes.pop(session_id, None)
                 return CopilotResult(
-                    output="⏱️ Copilot timed out after {}s. The session is preserved — send another message to continue.".format(
-                        self.timeout
-                    ),
-                    exit_code=-1,
-                    timed_out=True,
+                    output="Copilot timed out. Session preserved, send another message to continue.",
+                    exit_code=-1, timed_out=True,
                 )
 
+            await process.wait()
             self._active_processes.pop(session_id, None)
-
-            raw = stdout.decode("utf-8", errors="replace").strip()
-            if not raw and stderr:
-                raw = "⚠️ " + stderr.decode("utf-8", errors="replace").strip()
-
-            result = self._parse_json_output(raw)
-            result.exit_code = process.returncode or 0
-            return result
+            return CopilotResult(
+                output=final_message or "Done (no output).",
+                exit_code=process.returncode or 0,
+            )
 
         except FileNotFoundError:
             return CopilotResult(
-                output="❌ Copilot CLI not found. Is `{}` on PATH?".format(
-                    self.copilot_command
-                ),
+                output="Copilot CLI not found. Is `{}` on PATH?".format(self.copilot_command),
                 exit_code=-1,
             )
         except Exception as e:
             logger.exception("Copilot execution failed")
-            return CopilotResult(output=f"❌ Error: {e}", exit_code=-1)
+            return CopilotResult(output=f"Error: {e}", exit_code=-1)
+
+    async def _stream_events(self, process, room_id, on_step, on_ask_user) -> str:
+        """Read JSONL events from copilot stdout, stream steps to Matrix in real-time."""
+        final_message = ""
+
+        while True:
+            line = await process.stdout.readline()
+            if not line:
+                break
+            line = line.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            event_type = event.get("type", "")
+            data = event.get("data", {})
+
+            if event_type == "tool.execution_start":
+                tool_name = data.get("toolName", "")
+                tool_input = data.get("arguments", {})
+
+                # Handle ask_user specially
+                if tool_name == "ask_user" and on_ask_user:
+                    question = tool_input.get("question", "")
+                    choices = tool_input.get("choices", [])
+                    try:
+                        answer = await on_ask_user(room_id, question, choices)
+                        if process.stdin:
+                            process.stdin.write((answer + "\n").encode("utf-8"))
+                            await process.stdin.drain()
+                    except Exception:
+                        logger.warning("Failed to handle ask_user", exc_info=True)
+                elif on_step:
+                    step = self._format_tool_start(tool_name, tool_input)
+                    if step:
+                        try:
+                            await on_step(room_id, step)
+                        except Exception:
+                            logger.debug("Failed to send step", exc_info=True)
+
+            elif event_type == "tool.execution_complete" and on_step:
+                tool_name = data.get("toolName", "")
+                result_data = data.get("result", {})
+                output = result_data.get("content", "") if isinstance(result_data, dict) else ""
+                step = self._format_tool_end(tool_name, output)
+                if step:
+                    try:
+                        await on_step(room_id, step)
+                    except Exception:
+                        logger.debug("Failed to send tool result", exc_info=True)
+
+            elif event_type == "assistant.message":
+                content = data.get("content", "").strip()
+                if content:
+                    final_message = content
+
+        return final_message
 
     async def kill_all(self):
-        """Kill all running copilot processes."""
         count = len(self._active_processes)
         if count == 0:
             return 0
@@ -115,65 +157,20 @@ class CopilotRunner:
 
     @property
     def active_count(self) -> int:
-        # Clean up already-finished processes
         finished = [s for s, p in self._active_processes.items() if p.returncode is not None]
         for s in finished:
             self._active_processes.pop(s, None)
         return len(self._active_processes)
 
-    def _parse_json_output(self, raw: str) -> CopilotResult:
-        """Parse JSONL output from copilot into structured result."""
-        steps = []
-        final_message = ""
-        tool_results = []
-
-        for line in raw.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-
-            event_type = event.get("type", "")
-            data = event.get("data", {})
-
-            if event_type == "tool.execution_start":
-                tool_name = data.get("toolName", "")
-                tool_input = data.get("arguments", {})
-                step = self._format_tool_start(tool_name, tool_input)
-                if step:
-                    steps.append(step)
-
-            elif event_type == "tool.execution_complete":
-                tool_name = data.get("toolName", "")
-                result_data = data.get("result", {})
-                output = result_data.get("content", "") if isinstance(result_data, dict) else str(result_data)
-                step = self._format_tool_end(tool_name, output)
-                if step:
-                    tool_results.append(step)
-
-            elif event_type == "assistant.message":
-                content = data.get("content", "").strip()
-                if content:
-                    final_message = content
-
-        if not final_message and not steps:
-            # Fallback: raw wasn't JSON, just return it as-is
-            return CopilotResult(output=raw or "✅ Done (no output).")
-
-        return CopilotResult(output=final_message, steps=steps + tool_results)
-
     def _format_tool_start(self, tool_name: str, tool_input: dict) -> Optional[str]:
-        """Format a tool invocation step for display."""
-        # Skip internal tools
-        if tool_name in ("report_intent",):
+        if tool_name == "ask_user":
             return None
-
+        if tool_name == "report_intent":
+            intent = tool_input.get("intent", "")
+            return f"💭 _{intent}_" if intent else None
         if tool_name in ("shell", "powershell"):
-            cmd = tool_input.get("command", "")
             desc = tool_input.get("description", "")
+            cmd = tool_input.get("command", "")
             label = desc or (cmd[:60] + "..." if len(cmd) > 60 else cmd)
             return f"🔧 `{label}`" if label else None
         elif tool_name in ("read", "view"):
@@ -200,7 +197,7 @@ class CopilotRunner:
         elif tool_name == "task":
             desc = tool_input.get("description", "sub-agent")
             return f"🤖 Delegating: {desc}"
-        elif tool_name == "web_search" or tool_name == "web_fetch":
+        elif tool_name in ("web_search", "web_fetch"):
             query = tool_input.get("query", tool_input.get("url", ""))
             return f"🌐 Searching: {query[:60]}" if query else None
         else:
@@ -208,51 +205,34 @@ class CopilotRunner:
             return f"⚡ {tool_name}: {desc}" if desc else f"⚡ {tool_name}"
 
     def _format_tool_end(self, tool_name: str, output: str) -> Optional[str]:
-        """Format tool result for display (only for notable results)."""
         if tool_name in ("shell", "powershell") and output:
-            # Strip exit code suffix
             clean = output.strip()
-            if clean.endswith(">"):
-                # Remove "<exited with exit code X>"
-                idx = clean.rfind("<exited")
-                if idx > 0:
-                    clean = clean[:idx].strip()
-            lines = clean.split("\n")
-            if lines and len(clean) < 200:
+            idx = clean.rfind("<exited")
+            if idx > 0:
+                clean = clean[:idx].strip()
+            if clean and len(clean) < 200:
                 return f"  └ `{clean}`"
         return None
 
     @staticmethod
     def _short_path(path: str) -> str:
-        """Shorten a path for display — just filename or last 2 components."""
         parts = path.replace("\\", "/").rstrip("/").split("/")
-        if len(parts) <= 2:
-            return path
-        return "/".join(parts[-2:])
+        return "/".join(parts[-2:]) if len(parts) > 2 else path
 
-    def _build_prompt_and_flags(
-        self, message: str, mode: str
-    ) -> tuple[str, list[str]]:
-        """Determine the prompt text and extra CLI flags based on mode."""
+    def _build_prompt_and_flags(self, message, mode):
         extra_flags = []
-
         if mode == "plan":
             return f"[[PLAN]] {message}", extra_flags
         elif mode == "auto":
-            extra_flags = ["--autopilot", "--no-ask-user"]
+            extra_flags = ["--autopilot"]
             return message, extra_flags
-        else:  # chat
-            return message, extra_flags
+        return message, extra_flags
 
-    def _build_args(
-        self, prompt: str, session_id: str, extra_flags: list[str]
-    ) -> list[str]:
+    def _build_args(self, prompt, session_id, extra_flags):
         return [
             f"--resume={session_id}",
-            "-p",
-            prompt,
+            "-p", prompt,
             "--yolo",
-            "--output-format",
-            "json",
+            "--output-format", "json",
             *extra_flags,
         ]

@@ -63,6 +63,8 @@ class MatrixBridge:
         self.on_message = on_message
         self._initial_sync_done = False
         self._encryption_warned: set[str] = set()
+        # Per-room futures for wait_for_reply (ask_user support)
+        self._reply_waiters: dict[str, asyncio.Future] = {}
 
         self.e2e_enabled = _has_olm()
 
@@ -169,6 +171,18 @@ class MatrixBridge:
         """Show typing indicator."""
         await self.client.room_typing(room_id, typing, timeout=timeout)
 
+    async def wait_for_reply(self, room_id: str, timeout: float = 300) -> str:
+        """Wait for the owner's next message in a specific room (for ask_user)."""
+        loop = asyncio.get_event_loop()
+        future = loop.create_future()
+        self._reply_waiters[room_id] = future
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            return "(no response)"
+        finally:
+            self._reply_waiters.pop(room_id, None)
+
     async def _trust_owner_devices(self):
         """Auto-trust all devices belonging to the owner."""
         try:
@@ -254,6 +268,12 @@ class MatrixBridge:
             return
 
         logger.info("Message in %s from %s: %s", room.display_name, event.sender, message[:80])
+
+        # If there's a pending ask_user waiter for this room, resolve it instead
+        waiter = self._reply_waiters.get(room.room_id)
+        if waiter and not waiter.done():
+            waiter.set_result(message)
+            return
 
         if self.on_message:
             try:
