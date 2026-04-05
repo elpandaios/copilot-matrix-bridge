@@ -70,6 +70,15 @@ class RoomStore:
         self._upsert(state)
         return state
 
+    def set_session(self, room_id: str, session_id: str, project_path: str = "") -> RoomState:
+        """Switch to a specific copilot session (for /resume)."""
+        state = self.get(room_id)
+        state.session_id = session_id
+        if project_path:
+            state.project_path = project_path
+        self._upsert(state)
+        return state
+
     def _upsert(self, state: RoomState):
         self._conn.execute(
             """INSERT INTO rooms (room_id, project_path, session_id, mode)

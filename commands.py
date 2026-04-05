@@ -47,6 +47,8 @@ class CommandHandler:
             "/projects": self._cmd_projects,
             "/mode": self._cmd_mode,
             "/status": self._cmd_status,
+            "/session": self._cmd_session,
+            "/resume": self._cmd_resume,
             "/reset": self._cmd_reset,
             "/clear": self._cmd_clear,
             "/shutdown": self._cmd_shutdown,
@@ -74,8 +76,18 @@ class CommandHandler:
             )
 
         state = self.room_store.set_project(room_id, path)
+
+        # Build room name: project | branch
+        branch = self.copilot_runner.get_git_branch(path)
+        room_name = arg
+        if branch:
+            room_name = f"{arg} | {branch}"
+        self._pending_rename = (room_id, room_name)
+
         return CommandResult(
-            f"✅ Working in **{arg}**\n`{path}`\n\nNew copilot session: `{state.session_id[:8]}...`"
+            f"✅ Working in **{arg}**\n`{path}`\n"
+            f"Branch: `{branch or 'N/A'}`\n"
+            f"Session: `{state.session_id[:8]}...`"
         )
 
     def _cmd_projects(self, room_id: str, arg: str) -> CommandResult:
@@ -130,6 +142,100 @@ class CommandHandler:
             f"  • Active copilot processes: {active}"
         )
 
+    def _cmd_session(self, room_id: str, arg: str) -> CommandResult:
+        state = self.room_store.get(room_id)
+        if not state.session_id:
+            return CommandResult("No active session. Send a message first.")
+
+        info = self.copilot_runner.get_session_info(state.session_id)
+        if not info:
+            return CommandResult(
+                f"📋 **Session** `{state.session_id[:8]}...`\n"
+                f"  • Project: {state.project_path or 'Not set'}\n"
+                f"  • Mode: {state.mode}\n"
+                f"  • _No copilot metadata yet (send a message first)_"
+            )
+
+        summary = info.get("summary", "Untitled")
+        branch = info.get("branch", "N/A")
+        repo = info.get("repository", "")
+        created = info.get("created_at", "")[:10]
+        updated = info.get("updated_at", "")[:10]
+        summaries = info.get("summary_count", 0)
+
+        return CommandResult(
+            f"📋 **Session: {summary}**\n"
+            f"  • ID: `{state.session_id[:8]}...`\n"
+            f"  • Project: {state.project_path or 'Not set'}\n"
+            f"  • Branch: `{branch}`\n"
+            f"  • Repo: {repo or 'N/A'}\n"
+            f"  • Mode: {state.mode}\n"
+            f"  • Created: {created}\n"
+            f"  • Updated: {updated}\n"
+            f"  • Compactions: {summaries}"
+        )
+
+    def _cmd_resume(self, room_id: str, arg: str) -> CommandResult:
+        sessions = self.copilot_runner.list_sessions(
+            str(self.project_discovery.projects_root)
+        )
+
+        if not sessions:
+            return CommandResult("No copilot sessions found.")
+
+        # If a number was given, switch to that session
+        if arg:
+            result = self._handle_resume_selection(room_id, arg, sessions)
+            if result:
+                return result
+            return CommandResult(f"❌ Invalid selection `{arg}`. Use a number from the list.")
+
+        # Show last 10 sessions
+        state = self.room_store.get(room_id)
+        lines = []
+        for i, s in enumerate(sessions[:10], 1):
+            sid = s.get("id", "?")[:8]
+            summary = s.get("summary", "Untitled")
+            branch = s.get("branch", "")
+            cwd = s.get("cwd", "")
+            project = cwd.replace("\\", "/").rstrip("/").split("/")[-1] if cwd else "?"
+            updated = s.get("updated_at", "")[:10]
+            current = " ← current" if state.session_id and s.get("id", "").startswith(state.session_id[:8]) else ""
+            branch_str = f" | {branch}" if branch else ""
+            lines.append(f"  **{i}.** `{sid}` {project}{branch_str} — _{summary}_ ({updated}){current}")
+
+        return CommandResult(
+            f"📜 **Recent sessions** ({len(sessions)} total):\n\n"
+            + "\n".join(lines)
+            + "\n\n_Use `/resume <number>` to switch to a session._"
+        )
+
+    def _handle_resume_selection(self, room_id: str, selection: str, sessions: list[dict]) -> Optional[CommandResult]:
+        """Handle /resume <number> to switch session."""
+        try:
+            idx = int(selection) - 1
+            if 0 <= idx < len(sessions[:10]):
+                s = sessions[idx]
+                sid = s.get("id", "")
+                cwd = s.get("cwd", "")
+                summary = s.get("summary", "Untitled")
+                branch = s.get("branch", "")
+                if sid:
+                    self.room_store.set_session(room_id, sid, cwd)
+                    room_name = summary
+                    if branch:
+                        room_name = f"{summary} | {branch}"
+                    self._pending_rename = (room_id, room_name)
+                    return CommandResult(
+                        f"✅ Resumed session: **{summary}**\n"
+                        f"  • ID: `{sid[:8]}...`\n"
+                        f"  • Branch: `{branch or 'N/A'}`\n"
+                        f"  • Path: `{cwd}`"
+                    )
+        except (ValueError, IndexError):
+            pass
+        return None
+
     def _cmd_reset(self, room_id: str, arg: str) -> CommandResult:
         self.room_store.reset_session(room_id)
         return CommandResult(
@@ -163,6 +269,8 @@ class CommandHandler:
             "  `/project <name>` — set working directory\n"
             "  `/projects` — list available projects\n"
             "  `/mode <chat|plan|auto>` — set room mode\n"
+            "  `/session` — show copilot session details\n"
+            "  `/resume` — list & switch to past sessions\n"
             "  `/status` — show current state\n"
             "  `/reset` — start fresh copilot session (new ID)\n"
             "  `/clear` — clear copilot context (same session)\n"

@@ -171,6 +171,16 @@ class MatrixBridge:
         """Show typing indicator."""
         await self.client.room_typing(room_id, typing, timeout=timeout)
 
+    async def set_room_name(self, room_id: str, name: str):
+        """Set the display name of a Matrix room."""
+        try:
+            await self.client.room_put_state(
+                room_id, "m.room.name", {"name": name}
+            )
+            logger.info("Room %s renamed to: %s", room_id, name)
+        except Exception as e:
+            logger.warning("Failed to rename room %s: %s", room_id, e)
+
     async def wait_for_reply(self, room_id: str, timeout: float = 300) -> str:
         """Wait for the owner's next message in a specific room (for ask_user)."""
         loop = asyncio.get_event_loop()

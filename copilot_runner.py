@@ -3,8 +3,12 @@
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+import subprocess
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional, Callable, Awaitable
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +165,55 @@ class CopilotRunner:
         for s in finished:
             self._active_processes.pop(s, None)
         return len(self._active_processes)
+
+    @staticmethod
+    def get_session_info(session_id: str) -> dict:
+        """Read workspace.yaml for a copilot session."""
+        ws_path = Path.home() / ".copilot" / "session-state" / session_id / "workspace.yaml"
+        if not ws_path.exists():
+            return {}
+        try:
+            with open(ws_path, "r") as f:
+                return yaml.safe_load(f) or {}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def get_git_branch(cwd: str) -> Optional[str]:
+        """Get the current git branch for a project directory."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=cwd, capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def list_sessions(projects_root: str = "") -> list[dict]:
+        """List all copilot sessions with their metadata."""
+        state_dir = Path.home() / ".copilot" / "session-state"
+        if not state_dir.exists():
+            return []
+        sessions = []
+        for d in sorted(state_dir.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+            ws = d / "workspace.yaml"
+            if not ws.exists():
+                continue
+            try:
+                with open(ws, "r") as f:
+                    data = yaml.safe_load(f) or {}
+                # Optionally filter by projects_root
+                cwd = data.get("cwd", "")
+                if projects_root and not cwd.replace("\\", "/").startswith(projects_root.replace("\\", "/")):
+                    continue
+                sessions.append(data)
+            except Exception:
+                continue
+        return sessions
 
     def _format_tool_start(self, tool_name: str, tool_input: dict) -> Optional[str]:
         if tool_name == "ask_user":

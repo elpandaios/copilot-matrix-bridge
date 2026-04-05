@@ -77,6 +77,23 @@ def main():
         device_name=device_name,
     )
 
+    async def handle_pending_renames():
+        """Process any pending room renames from commands."""
+        pending = getattr(command_handler, '_pending_rename', None)
+        if pending:
+            command_handler._pending_rename = None
+            rid, name = pending
+            await bridge.set_room_name(rid, name)
+
+    async def update_room_name_from_session(room_id: str, session_id: str):
+        """After copilot replies, read workspace.yaml for session summary and update room name."""
+        info = copilot_runner.get_session_info(session_id)
+        summary = info.get("summary", "")
+        if summary:
+            branch = info.get("branch", "")
+            name = f"{summary} | {branch}" if branch else summary
+            await bridge.set_room_name(room_id, name)
+
     async def on_message(room_id: str, message: str) -> str:
         """Route a message to commands or copilot."""
         # Check for slash commands first
@@ -98,6 +115,8 @@ def main():
                     mode="chat",
                 )
                 return f"🧹 Session cleared. {result.output}"
+            # Handle any pending room renames from /project or /resume
+            await handle_pending_renames()
             return cmd_result.response
 
         # Check for inline prefix override
@@ -120,7 +139,6 @@ def main():
 
         # ask_user callback: forward question to Matrix, wait for reply
         async def on_ask_user(rid: str, question: str, choices: list[str]) -> str:
-            # Format question with numbered choices
             if choices:
                 formatted = question + "\n\n"
                 for i, choice in enumerate(choices, 1):
@@ -129,9 +147,7 @@ def main():
             else:
                 formatted = question + "\n\n_Reply with your answer:_"
             await bridge.send_message(rid, f"❓ {formatted}")
-            # Wait for the user's next message in this room
             answer = await bridge.wait_for_reply(rid)
-            # If they replied with a number, map to the choice
             if choices and answer.strip().isdigit():
                 idx = int(answer.strip()) - 1
                 if 0 <= idx < len(choices):
@@ -148,6 +164,9 @@ def main():
             on_step=on_step,
             on_ask_user=on_ask_user,
         )
+
+        # After copilot replies, update room name from session summary
+        await update_room_name_from_session(room_id, state.session_id)
 
         return result.output
 
