@@ -1,70 +1,81 @@
 # Copilot Matrix Bridge
 
-Chat with GitHub Copilot CLI from Matrix/Element — on your phone, from any device.
+Chat with [GitHub Copilot CLI](https://githubnext.com/projects/copilot-cli/) from **Matrix/Element** — on your phone, tablet, or any device.
 
-Each device runs a local bridge process. Create rooms in Element, invite the bot, pick a project, and start chatting. Copilot sessions persist across messages via `--resume`.
+Each machine runs a local bridge that connects your Copilot CLI to Matrix rooms. Create a room, invite the bot, pick a project, and start chatting. Copilot sessions persist across messages.
 
-## Architecture
+## How It Works
 
 ```
-Element (phone/desktop/web)
-    ↕
-Synapse (matrix.plainwise.com)
-    ↕
-Local Bridge (this script, per device)
-    ↕
-copilot --resume=<session> -p "msg" -s --yolo
+Element (phone / desktop / web)
+    ↕  Matrix protocol
+Your Synapse Server
+    ↕  matrix-nio
+Bridge (this script, runs locally per device)
+    ↕  subprocess
+copilot --resume=<session> -p "msg" --yolo --output-format json
 ```
 
-## Quick Start
+- Each Matrix room = independent Copilot session
+- Tool usage steps stream to Matrix in real-time (🔧 Running tests, 📄 Reading file...)
+- Copilot can ask you questions — they appear in chat, you reply, it continues
+- Room names auto-update to reflect the session (e.g. `Fix Auth Bug | Portal-Main | development | 2026-04-05`)
 
-### 1. Create a bot user on Synapse
+## Prerequisites
 
-SSH into your Synapse server and register a user:
+- **GitHub Copilot CLI** installed and authenticated (`copilot` command working in your terminal)
+- **Python 3.11+**
+- A **Matrix/Synapse server** you control (or any Matrix homeserver where you can register bot users)
+- **Element** (or any Matrix client) on the device you want to chat from
+
+---
+
+## Quick Start (Standalone)
+
+### 1. Create a bot user on your Synapse server
 
 ```bash
-# On the Synapse server
 register_new_matrix_user -u copilot-win -p <password> -c /path/to/homeserver.yaml --no-admin
-
-# Or via Admin API (if enabled):
-curl -X PUT "https://matrix.plainwise.com/_synapse/admin/v2/users/@copilot-win:plainwise.com" \
-  -H "Authorization: Bearer <admin_token>" \
-  -H "Content-Type: application/json" \
-  -d '{"password": "<password>", "admin": false}'
 ```
 
-Use different usernames per device: `copilot-win`, `copilot-mac`, etc.
+Use different names per device: `copilot-win`, `copilot-mac`, `copilot-work`, etc.
 
 ### 2. Clone and configure
 
 ```bash
-cd ~/PycharmProjects
-# (already cloned)
+git clone https://github.com/elpandaios/copilot-matrix-bridge.git
 cd copilot-matrix-bridge
 
-# Config
 cp config.yaml.example config.yaml
 cp .env.example .env
-
-# Edit .env with your bot credentials
-# Edit config.yaml with your device name and projects root
 ```
 
-**`.env`:**
-```
-MATRIX_HOMESERVER=https://matrix.plainwise.com
-MATRIX_BOT_USER=@copilot-win:plainwise.com
-MATRIX_BOT_PASSWORD=your-password
-MATRIX_OWNER_ID=@hugo:plainwise.com
+Edit **`.env`** with your Matrix credentials:
+
+```env
+MATRIX_HOMESERVER=https://your-matrix-server.com
+MATRIX_BOT_USER=@copilot-win:your-server.com
+MATRIX_BOT_PASSWORD=your-bot-password
+MATRIX_OWNER_ID=@your-username:your-server.com
 ```
 
-**`config.yaml`:**
+Edit **`config.yaml`** for your machine:
+
 ```yaml
+# Windows
 device_name: "Windows Desktop"
-projects_root: "C:\\Users\\hugom\\PycharmProjects"
+projects_root: "C:\\Users\\you\\Projects"
+copilot_command: "copilot"          # or full path: "C:\\nvm4w\\nodejs\\copilot.cmd"
+copilot_timeout: 10800              # 3 hours
+
+# macOS / Linux
+device_name: "MacBook Pro"
+projects_root: "/Users/you/Projects"
 copilot_command: "copilot"
-copilot_timeout: 300
+copilot_timeout: 10800
 ```
+
+> **Windows note:** If `copilot` isn't on Python's PATH, use the full path to `copilot.cmd` (e.g. from nvm or Node.js install).
 
 ### 3. Install dependencies
 
@@ -78,102 +89,148 @@ pip install -r requirements.txt
 python bridge.py
 ```
 
+You should see:
+```
+🤖 Copilot Matrix Bridge starting...
+   Device: Windows Desktop
+   Projects: C:\Users\you\Projects
+   Available projects: my-app, api-server, ...
+```
+
+---
+
+## Quick Start (Docker)
+
+Docker includes **E2E encryption support** (via libolm) and bundles Node.js + Copilot CLI.
+
+### 1. Configure
+
+Same as above — create `.env` and `config.yaml`. In `config.yaml`, set:
+
+```yaml
+projects_root: "/projects"   # Docker mount path
+copilot_command: "copilot"
+```
+
+### 2. Run
+
+```bash
+docker compose up -d
+```
+
+The `docker-compose.yml` mounts your local project directories into the container. Edit the volume path to match your machine:
+
+```yaml
+volumes:
+  - /Users/you/Projects:/projects    # macOS/Linux
+  # - C:/Users/you/Projects:/projects  # Windows
+```
+
+### 3. Authenticate Copilot inside the container
+
+```bash
+docker compose exec bridge copilot auth
+```
+
+---
+
 ## Usage
 
 ### In Element
 
-1. Create a Space called "🤖 Copilots" (optional, for organization)
-2. Create a new room (e.g., "Fix auth bug")
-3. Invite `@copilot-win:plainwise.com`
-4. Bot joins and greets you
-5. Set a project: `/project Call-System-V6`
-6. Start chatting!
+1. Create a new room (e.g. "Fix auth bug")
+2. Invite your bot (e.g. `@copilot-win:your-server.com`)
+3. Bot joins and greets you
+4. Set a project: `:project my-app`
+5. Start chatting!
 
 ### Commands
 
 | Command | Description |
 |---------|-------------|
-| `/project <name>` | Set working directory |
-| `/projects` | List available projects |
-| `/mode <chat\|plan\|auto>` | Set room mode |
-| `/status` | Show current state |
-| `/reset` | Start fresh copilot session |
-| `/help` | Show all commands |
+| `:project <name>` | Set working directory |
+| `:projects` | List available projects |
+| `:mode <chat\|plan\|auto>` | Set room mode |
+| `:session` | Show copilot session details |
+| `:resume` | List & switch to past sessions |
+| `:status` | Show current state |
+| `:reset` | Start fresh session (new ID) |
+| `:clear` | Clear copilot context (same session) |
+| `:shutdown` | Kill stuck copilot processes |
+| `:help` | Show all commands |
+
+> Commands use `:` prefix (not `/`) to avoid conflicts with Element's built-in slash commands.
 
 ### Modes
 
-| Mode | Behavior |
-|------|----------|
-| `chat` (default) | Conversational — copilot answers and stops |
-| `plan` | Planning — structured plans, no code execution |
-| `auto` | Autopilot — copilot keeps working until done |
+| Mode | Behavior | Example |
+|------|----------|---------|
+| `chat` (default) | Conversational — answers and stops | "What does this function do?" |
+| `plan` | Planning — structured plans, no execution | "Design the auth system" |
+| `auto` | Autopilot — keeps working until done | "Implement the rate limiter" |
 
 ### Inline Prefixes
 
 Override the room mode for a single message:
 
-- `plan: design the auth system` → plan mode for this message
-- `do: implement the rate limiter` → autopilot for this message
-- (no prefix) → uses the room's current mode
+```
+plan: design the database schema     → plan mode for this message
+do: fix the failing tests            → autopilot for this message
+```
 
 ### Multiple Chats
 
-Each room is an independent copilot session, even if multiple rooms use the same project:
+Each room is an independent copilot session:
 
-- Room "Fix auth" → Call-System-V6 → Session A
-- Room "Add logging" → Call-System-V6 → Session B
-- Room "Refactor pricing" → Portal-Main → Session C
+- Room "Fix auth" → my-app → Session A
+- Room "Add logging" → my-app → Session B  
+- Room "Pricing page" → frontend → Session C
 
 ### Multi-Device
 
-Each device has its own bot user:
+Run one bridge per machine. Each gets its own bot user:
 
-| Device | Bot User | Bridge |
-|--------|----------|--------|
-| Windows | `@copilot-win:plainwise.com` | `python bridge.py` on Windows |
-| Mac | `@copilot-mac:plainwise.com` | `python bridge.py` on Mac |
+| Device | Bot User | Runs locally |
+|--------|----------|-------------|
+| Windows Desktop | `@copilot-win:server.com` | `python bridge.py` |
+| MacBook | `@copilot-mac:server.com` | `python bridge.py` |
+| Work Laptop | `@copilot-work:server.com` | `python bridge.py` |
 
-Invite the bot for the device you want to work on.
+Invite the right bot into a room to control which device runs the work.
 
-## How It Works
+---
 
-1. You send a message in a Matrix room
-2. Bridge picks it up via `/sync`
-3. Looks up the room's project path and copilot session ID
-4. Runs: `copilot --resume=<session-id> -p "your message" -s --yolo`
-5. Copilot processes the message with full session context
-6. Response is sent back to the Matrix room
+## Run as a Service (Optional)
 
-Session state is managed entirely by Copilot CLI (`~/.copilot/session-state/`). The bridge only stores the mapping of room → project + session ID in a local SQLite database (`bridge.db`).
-
-## Running as a Service (Optional)
-
-### Windows (Task Scheduler)
+### Windows — Task Scheduler
 
 Create a scheduled task that runs at login:
-```
-Program: python
-Arguments: C:\Users\hugom\PycharmProjects\copilot-matrix-bridge\bridge.py
-Start in: C:\Users\hugom\PycharmProjects\copilot-matrix-bridge
-```
 
-### Mac (launchd)
+| Field | Value |
+|-------|-------|
+| Program | `python` |
+| Arguments | `bridge.py` |
+| Start in | `C:\Users\you\...\copilot-matrix-bridge` |
 
-Create `~/Library/LaunchAgents/com.plainwise.copilot-bridge.plist`:
+### macOS — launchd
+
+Create `~/Library/LaunchAgents/com.copilot-bridge.plist`:
+
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.plainwise.copilot-bridge</string>
+    <string>com.copilot-bridge</string>
     <key>ProgramArguments</key>
     <array>
         <string>python3</string>
-        <string>/Users/hugo/PycharmProjects/copilot-matrix-bridge/bridge.py</string>
+        <string>/Users/you/copilot-matrix-bridge/bridge.py</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/hugo/PycharmProjects/copilot-matrix-bridge</string>
+    <string>/Users/you/copilot-matrix-bridge</string>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -182,4 +239,59 @@ Create `~/Library/LaunchAgents/com.plainwise.copilot-bridge.plist`:
 </plist>
 ```
 
-Then: `launchctl load ~/Library/LaunchAgents/com.plainwise.copilot-bridge.plist`
+```bash
+launchctl load ~/Library/LaunchAgents/com.copilot-bridge.plist
+```
+
+### Linux — systemd
+
+```ini
+# ~/.config/systemd/user/copilot-bridge.service
+[Unit]
+Description=Copilot Matrix Bridge
+
+[Service]
+WorkingDirectory=/home/you/copilot-matrix-bridge
+ExecStart=python3 bridge.py
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+systemctl --user enable --now copilot-bridge
+```
+
+---
+
+## E2E Encryption
+
+- **Docker**: Full E2E encryption via libolm (included in the image)
+- **Standalone on macOS/Linux**: Install `libolm-dev` and `pip install python-olm` for E2E support
+- **Standalone on Windows**: E2E encryption is **not supported** (python-olm doesn't build). Create rooms with encryption disabled, or use Docker.
+
+The bridge auto-detects whether E2E is available and falls back gracefully.
+
+---
+
+## Project Structure
+
+```
+copilot-matrix-bridge/
+├── bridge.py              # Entry point — wires everything together
+├── matrix_client.py       # Matrix connection, message handling, E2E
+├── copilot_runner.py      # Spawns copilot CLI, streams JSONL events
+├── commands.py            # :command handlers
+├── room_store.py          # SQLite: room → project + session mapping
+├── project_discovery.py   # Scans for git repos under projects_root
+├── config.yaml.example    # Device config template
+├── .env.example           # Matrix credentials template
+├── requirements.txt       # Python dependencies
+├── Dockerfile             # Docker image with libolm + Node.js
+└── docker-compose.yml     # Docker Compose setup
+```
+
+## License
+
+MIT

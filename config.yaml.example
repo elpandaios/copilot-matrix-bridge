@@ -2,14 +2,15 @@
 device_name: "Windows Desktop"
 
 # Root directory to scan for projects (directories with .git)
-# Native: "C:\\Users\\hugom\\PycharmProjects" or "/Users/hugo/PycharmProjects"
-# Docker: "/projects" (mounted from host)
-projects_root: "C:\\Users\\hugom\\PycharmProjects"
+# Windows:    "C:\\Users\\you\\Projects"
+# macOS:      "/Users/you/Projects"
+# Linux:      "/home/you/Projects"
+# Docker:     "/projects" (mounted from host)
+projects_root: "C:\\Users\\you\\Projects"
 
 # Copilot CLI executable
-# Windows: use full path to .cmd if copilot is not on Python's PATH
-# e.g. "C:\\nvm4w\\nodejs\\copilot.cmd" or just "copilot" if on PATH
-# Mac/Linux: usually just "copilot"
+# Usually just "copilot" if it's on your PATH.
+# Windows: you may need the full path, e.g. "C:\\nvm4w\\nodejs\\copilot.cmd"
 copilot_command: "copilot"
 
 # Timeout in seconds for copilot CLI invocations (default: 3 hours)
