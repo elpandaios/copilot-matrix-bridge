@@ -9,4 +9,5 @@ build/
 venv/
 .venv/
 bridge.db
+crypto_store/
 *.log

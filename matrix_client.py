@@ -2,19 +2,44 @@
 
 import asyncio
 import logging
+import os
+from pathlib import Path
 from typing import Callable, Awaitable, Optional
 
 from nio import (
     AsyncClient,
     InviteMemberEvent,
+    KeyVerificationStart,
+    KeyVerificationCancel,
+    KeyVerificationKey,
+    KeyVerificationMac,
     MatrixRoom,
     MegolmEvent,
     RoomMessageText,
     LoginResponse,
     LoginError,
+    ToDeviceError,
+    LocalProtocolError,
+    crypto,
 )
 
 logger = logging.getLogger(__name__)
+
+# Check if E2E support is available
+try:
+    from nio import AsyncClientConfig
+    _E2E_AVAILABLE = True
+except ImportError:
+    _E2E_AVAILABLE = False
+
+
+def _has_olm() -> bool:
+    """Check if python-olm is installed and functional."""
+    try:
+        import olm  # noqa: F401
+        return True
+    except ImportError:
+        return False
 
 
 class MatrixBridge:
@@ -25,6 +50,7 @@ class MatrixBridge:
         bot_password: str,
         owner_id: str,
         device_name: str,
+        store_path: str = "",
         on_message: Optional[Callable[[str, str], Awaitable[str]]] = None,
     ):
         self.homeserver = homeserver
@@ -33,9 +59,28 @@ class MatrixBridge:
         self.owner_id = owner_id
         self.device_name = device_name
         self.on_message = on_message
-
-        self.client = AsyncClient(homeserver, bot_user)
         self._initial_sync_done = False
+        self._encryption_warned: set[str] = set()
+
+        self.e2e_enabled = _has_olm()
+
+        if self.e2e_enabled:
+            # Set up crypto store for E2E key persistence
+            if not store_path:
+                store_path = str(Path(__file__).parent / "crypto_store")
+            os.makedirs(store_path, exist_ok=True)
+
+            config = AsyncClientConfig(
+                store_sync_tokens=True,
+                encryption_enabled=True,
+            )
+            self.client = AsyncClient(
+                homeserver, bot_user, store_path=store_path, config=config
+            )
+            logger.info("E2E encryption enabled (python-olm found)")
+        else:
+            self.client = AsyncClient(homeserver, bot_user)
+            logger.warning("E2E encryption NOT available (python-olm not installed)")
 
     async def start(self):
         """Login and start the sync loop."""
@@ -51,15 +96,37 @@ class MatrixBridge:
 
         logger.info("Logged in. Device ID: %s", resp.device_id)
 
+        if self.e2e_enabled:
+            # Trust the owner's devices automatically
+            logger.info("E2E enabled — will auto-trust %s's devices", self.owner_id)
+
         # Register event callbacks
         self.client.add_event_callback(self._on_room_message, RoomMessageText)
         self.client.add_event_callback(self._on_invite, InviteMemberEvent)
         self.client.add_event_callback(self._on_encrypted_message, MegolmEvent)
 
+        if self.e2e_enabled:
+            self.client.add_to_device_callback(
+                self._on_key_verification, KeyVerificationStart
+            )
+            self.client.add_to_device_callback(
+                self._on_key_verification_cancel, KeyVerificationCancel
+            )
+            self.client.add_to_device_callback(
+                self._on_key_verification_key, KeyVerificationKey
+            )
+            self.client.add_to_device_callback(
+                self._on_key_verification_mac, KeyVerificationMac
+            )
+
         # Initial sync to catch up — we ignore messages from before we started
         logger.info("Performing initial sync...")
-        await self.client.sync(timeout=10000)
+        await self.client.sync(timeout=10000, full_state=True)
         self._initial_sync_done = True
+
+        if self.e2e_enabled:
+            await self._trust_owner_devices()
+
         logger.info("Initial sync complete. Listening for messages...")
 
         # Continuous sync
@@ -71,21 +138,84 @@ class MatrixBridge:
         await self.client.close()
 
     async def send_message(self, room_id: str, message: str):
-        """Send a text message (markdown) to a room."""
-        await self.client.room_send(
-            room_id,
-            message_type="m.room.message",
-            content={
-                "msgtype": "m.text",
-                "body": message,
-                "format": "org.matrix.custom.html",
-                "formatted_body": self._md_to_html(message),
-            },
-        )
+        """Send a text message (markdown) to a room. Auto-encrypts if room has E2E."""
+        content = {
+            "msgtype": "m.text",
+            "body": message,
+            "format": "org.matrix.custom.html",
+            "formatted_body": self._md_to_html(message),
+        }
+
+        try:
+            await self.client.room_send(
+                room_id,
+                message_type="m.room.message",
+                content=content,
+            )
+        except LocalProtocolError as e:
+            # If encryption fails, log and try to share keys
+            logger.warning("Send failed (likely missing keys): %s", e)
+            if self.e2e_enabled:
+                await self._share_keys_for_room(room_id)
+                await self.client.room_send(
+                    room_id,
+                    message_type="m.room.message",
+                    content=content,
+                )
 
     async def send_typing(self, room_id: str, typing: bool = True, timeout: int = 30000):
         """Show typing indicator."""
         await self.client.room_typing(room_id, typing, timeout=timeout)
+
+    async def _trust_owner_devices(self):
+        """Auto-trust all devices belonging to the owner."""
+        try:
+            devices = self.client.device_store
+            if not devices:
+                return
+
+            owner_devices = devices.get(self.owner_id, {})
+            for device_id, olm_device in owner_devices.items():
+                if not self.client.is_device_verified(olm_device):
+                    self.client.verify_device(olm_device)
+                    logger.info("Auto-trusted device %s for %s", device_id, self.owner_id)
+        except Exception as e:
+            logger.warning("Could not auto-trust owner devices: %s", e)
+
+    async def _share_keys_for_room(self, room_id: str):
+        """Share encryption keys with room members."""
+        try:
+            room = self.client.rooms.get(room_id)
+            if room and room.encrypted:
+                resp = await self.client.share_group_session(room_id)
+                if isinstance(resp, ToDeviceError):
+                    logger.warning("Failed to share group session: %s", resp)
+        except Exception as e:
+            logger.warning("Key sharing failed: %s", e)
+
+    async def _on_key_verification(self, event: KeyVerificationStart):
+        """Accept incoming key verification requests."""
+        logger.info("Key verification request from %s", event.sender)
+        try:
+            await self.client.accept_key_verification(event.transaction_id)
+        except Exception as e:
+            logger.warning("Failed to accept verification: %s", e)
+
+    async def _on_key_verification_cancel(self, event: KeyVerificationCancel):
+        """Handle verification cancellation."""
+        logger.info("Key verification cancelled: %s", event.reason)
+
+    async def _on_key_verification_key(self, event: KeyVerificationKey):
+        """Handle key exchange step — auto-confirm."""
+        logger.info("Key verification key exchange")
+        try:
+            await self.client.confirm_short_auth_string(event.transaction_id)
+        except Exception as e:
+            logger.warning("Failed to confirm verification: %s", e)
+
+    async def _on_key_verification_mac(self, event: KeyVerificationMac):
+        """Handle MAC verification step."""
+        logger.info("Key verification MAC received — verification complete")
 
     async def _on_invite(self, room: MatrixRoom, event: InviteMemberEvent):
         """Auto-accept invites from the owner."""
@@ -107,15 +237,12 @@ class MatrixBridge:
 
     async def _on_room_message(self, room: MatrixRoom, event: RoomMessageText):
         """Handle incoming messages."""
-        # Skip messages from before we started
         if not self._initial_sync_done:
             return
 
-        # Ignore our own messages
         if event.sender == self.client.user_id:
             return
 
-        # Only respond to the owner
         if event.sender != self.owner_id:
             logger.debug("Ignoring message from non-owner: %s", event.sender)
             return
@@ -133,8 +260,6 @@ class MatrixBridge:
                 await self.send_typing(room.room_id, False)
 
                 if response:
-                    # Chunk long responses (Matrix handles long messages, but
-                    # very long ones render poorly in Element)
                     for chunk in self._chunk_message(response):
                         await self.send_message(room.room_id, chunk)
 
@@ -150,22 +275,33 @@ class MatrixBridge:
         if event.sender == self.client.user_id:
             return
 
-        # Only warn once per room
         room_id = room.room_id
-        if not hasattr(self, "_encryption_warned"):
-            self._encryption_warned = set()
-
         if room_id not in self._encryption_warned:
             self._encryption_warned.add(room_id)
-            logger.warning("Encrypted message in %s — cannot decrypt", room.display_name)
-            await self.send_message(
-                room_id,
-                "🔒 **I can't read encrypted messages.**\n\n"
-                "Please create rooms with encryption **disabled**:\n"
-                "  1. Create room → Show advanced → **turn off** \"Enable encryption\"\n"
-                "  2. Or in Room Settings → Security → Encryption must be off\n\n"
-                "This is required because the bridge runs without E2E key management.",
-            )
+
+            if self.e2e_enabled:
+                logger.warning(
+                    "Failed to decrypt in %s — may need device verification",
+                    room.display_name,
+                )
+                await self.send_message(
+                    room_id,
+                    "🔒 **Couldn't decrypt this message.**\n\n"
+                    "Try verifying my device in Element:\n"
+                    "  Room → Members → copilot-bot → Verify\n\n"
+                    "I'll auto-trust your devices after that.",
+                )
+                # Attempt to re-trust after this event
+                await self._trust_owner_devices()
+            else:
+                logger.warning("Encrypted message in %s — no E2E support", room.display_name)
+                await self.send_message(
+                    room_id,
+                    "🔒 **I can't read encrypted messages.**\n\n"
+                    "Please create rooms with encryption **disabled**:\n"
+                    "  Create room → Show advanced → **turn off** \"Enable encryption\"\n\n"
+                    "Or run the bridge via Docker for E2E support.",
+                )
 
     @staticmethod
     def _chunk_message(text: str, max_len: int = 16000) -> list[str]:
@@ -191,6 +327,4 @@ class MatrixBridge:
     @staticmethod
     def _md_to_html(text: str) -> str:
         """Basic markdown pass-through. Matrix clients handle rendering."""
-        # Matrix clients like Element render markdown natively from the body.
-        # The formatted_body is a fallback — we just pass through for now.
         return text.replace("\n", "<br>")

@@ -1,0 +1,23 @@
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    volumes:
+      # Bridge config and state
+      - ./.env:/app/.env:ro
+      - ./config.yaml:/app/config.yaml:ro
+
+      # E2E crypto keys (persist across rebuilds)
+      - ./crypto_store:/app/crypto_store
+
+      # Copilot CLI session state (persist across rebuilds)
+      - copilot-state:/root/.copilot
+
+      # Project directories from host (mount your code here)
+      # Adjust the host path to match your machine
+      - ${USERPROFILE:-~}/PycharmProjects:/projects
+    environment:
+      - TERM=xterm-256color
+
+volumes:
+  copilot-state:

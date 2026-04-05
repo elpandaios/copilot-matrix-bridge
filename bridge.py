@@ -109,12 +109,14 @@ def main():
         return result.output
 
     # Create Matrix bridge
+    crypto_store = str(Path(__file__).parent / "crypto_store")
     bridge = MatrixBridge(
         homeserver=homeserver,
         bot_user=bot_user,
         bot_password=bot_password,
         owner_id=owner_id,
         device_name=device_name,
+        store_path=crypto_store,
         on_message=on_message,
     )
 
